@@ -6,7 +6,9 @@ const Database=require('better-sqlite3');
 
 const app=express();
 const PORT=process.env.PORT||3000;
-const db=new Database(process.env.DB_FILE||path.join(__dirname,'goodsflow.db'));
+const dataDir=process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || __dirname;
+const dbFile=process.env.DB_FILE || path.join(dataDir,'goodsflow.db');
+const db=new Database(dbFile);
 
 db.pragma('journal_mode = WAL');
 db.exec(`
@@ -52,7 +54,7 @@ if(!db.prepare('SELECT id FROM users LIMIT 1').get()){
   }
   const hash=bcrypt.hashSync(adminPassword,12);
   db.prepare('INSERT INTO users(name,email,password_hash) VALUES(?,?,?)')
-    .run(process.env.BUSINESS_NAME||'Brodrick',adminEmail,hash);
+    .run(process.env.BUSINESS_NAME||'Brodrick',adminEmail.toLowerCase().trim(),hash);
 }
 if(!db.prepare('SELECT id FROM products LIMIT 1').get()){
   const ins=db.prepare('INSERT INTO products(name,sku,category,cost,price,stock,reorder) VALUES(?,?,?,?,?,?,?)');
@@ -66,20 +68,21 @@ app.use(express.urlencoded({extended:true}));
 app.use(session({
   secret:process.env.SESSION_SECRET||(()=>{throw new Error('SESSION_SECRET must be set in production')})(),
   resave:false,saveUninitialized:false,
-  cookie:{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production'}
+  cookie:{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',maxAge:8*60*60*1000}
 }));
 app.use(express.static(path.join(__dirname,'public')));
 
 function auth(req,res,next){if(!req.session.user)return res.status(401).json({error:'Not authenticated'});next();}
 
 app.post('/api/login',(req,res)=>{
-  const u=db.prepare('SELECT * FROM users WHERE email=?').get(req.body.email);
-  if(!u||!bcrypt.compareSync(req.body.password,u.password_hash)) return res.status(401).json({error:'Invalid email or password'});
+  const u=db.prepare('SELECT * FROM users WHERE email=?').get((req.body.email||'').toLowerCase().trim());
+  if(!u||!bcrypt.compareSync(req.body.password||'',u.password_hash)) return res.status(401).json({error:'Invalid email or password'});
   req.session.user={id:u.id,name:u.name,email:u.email};
   res.json(req.session.user);
 });
 app.post('/api/logout',(req,res)=>req.session.destroy(()=>res.json({ok:true})));
 app.get('/api/me',(req,res)=>res.json(req.session.user||null));
+app.get('/health',(req,res)=>res.json({ok:true,service:'GoodsFlow'}));
 
 app.get('/api/dashboard',auth,(req,res)=>{
   const inventory=db.prepare('SELECT COALESCE(SUM(cost*stock),0) value FROM products').get().value;
@@ -134,4 +137,6 @@ app.post('/api/suppliers',auth,(req,res)=>{
 });
 
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
-app.listen(PORT,()=>console.log(`GoodsFlow online portal running on port ${PORT}`));
+
+if(!process.env.SESSION_SECRET) throw new Error('SESSION_SECRET must be set in production');
+app.listen(PORT,'0.0.0.0',()=>console.log(`GoodsFlow online portal running on port ${PORT}`));
